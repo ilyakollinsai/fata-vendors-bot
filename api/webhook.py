@@ -1,8 +1,8 @@
 import os
 import json
 import asyncio
+from http.server import BaseHTTPRequestHandler
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, Bot
-from telegram.ext import Application, CommandHandler, MessageHandler, filters, ConversationHandler
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "237989670"))
@@ -12,52 +12,37 @@ CATEGORIES = [
     "Образ", "Оборудование", "Координаторы", "Другое"
 ]
 
-(
-    NAME, CATEGORY, DESCRIPTION, PHONE, EMAIL,
-    WEBSITE, CITY, TELEGRAM_HANDLE, INSTAGRAM, PRICE_FROM, PRICE_TO, PHOTO
-) = range(12)
+NAME, CATEGORY, DESCRIPTION, PHONE, EMAIL, WEBSITE, CITY, TELEGRAM_HANDLE, INSTAGRAM, PRICE_FROM, PRICE_TO, PHOTO = range(12)
 
-# In-memory state (per user)
 user_states = {}
-user_data = {}
+user_data_store = {}
 
-def get_state(user_id):
-    return user_states.get(user_id, None)
-
-def set_state(user_id, state):
-    user_states[user_id] = state
-
-def get_data(user_id):
-    if user_id not in user_data:
-        user_data[user_id] = {}
-    return user_data[user_id]
+def get_state(uid): return user_states.get(uid)
+def set_state(uid, s): user_states[uid] = s
+def get_data(uid):
+    if uid not in user_data_store: user_data_store[uid] = {}
+    return user_data_store[uid]
 
 async def process_update(update_dict):
     bot = Bot(token=BOT_TOKEN)
     update = Update.de_json(update_dict, bot)
-
-    if not update.message:
-        return
+    if not update.message: return
 
     user_id = update.effective_user.id
-    text = update.message.text or ""
+    msg = update.message
+    text = msg.text or ""
     state = get_state(user_id)
     data = get_data(user_id)
 
-    # /start
     if text == "/start":
-        user_data[user_id] = {}
+        user_data_store[user_id] = {}
         set_state(user_id, NAME)
-        await bot.send_message(
-            chat_id=user_id,
-            text="👋 Привет! Это форма для размещения в каталоге свадебных подрядчиков *Fata*.\n\nЯ задам несколько вопросов — это займёт около 2 минут.\n\nНапишите *название вашей компании или имя*:",
-            parse_mode="Markdown"
-        )
+        await bot.send_message(chat_id=user_id, parse_mode="Markdown",
+            text="👋 Привет! Это форма для размещения в каталоге свадебных подрядчиков *Fata*.\n\nЯ задам несколько вопросов — это займёт около 2 минут.\n\nНапишите *название вашей компании или имя*:")
         return
 
-    # /cancel
     if text == "/cancel":
-        user_data[user_id] = {}
+        user_data_store[user_id] = {}
         set_state(user_id, None)
         await bot.send_message(chat_id=user_id, text="Заявка отменена. Напишите /start чтобы начать заново.")
         return
@@ -66,26 +51,18 @@ async def process_update(update_dict):
         data["name"] = text
         set_state(user_id, CATEGORY)
         keyboard = [[cat] for cat in CATEGORIES]
-        await bot.send_message(
-            chat_id=user_id,
-            text="Выберите *категорию*:",
-            parse_mode="Markdown",
-            reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
-        )
+        await bot.send_message(chat_id=user_id, text="Выберите *категорию*:", parse_mode="Markdown",
+            reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True))
 
     elif state == CATEGORY:
         data["category"] = text
         set_state(user_id, DESCRIPTION)
-        await bot.send_message(
-            chat_id=user_id,
-            text="Напишите *описание* ваших услуг (до 300 символов):",
-            parse_mode="Markdown",
-            reply_markup=ReplyKeyboardRemove()
-        )
+        await bot.send_message(chat_id=user_id, text="Напишите *описание* ваших услуг (до 300 символов):",
+            parse_mode="Markdown", reply_markup=ReplyKeyboardRemove())
 
     elif state == DESCRIPTION:
         if len(text) > 300:
-            await bot.send_message(chat_id=user_id, text="⚠️ Слишком длинно! Пожалуйста, сократите до 300 символов.")
+            await bot.send_message(chat_id=user_id, text="⚠️ Слишком длинно! Сократите до 300 символов.")
             return
         data["description"] = text
         set_state(user_id, PHONE)
@@ -135,8 +112,8 @@ async def process_update(update_dict):
         await bot.send_message(chat_id=user_id, text="Загрузите *фото* (логотип или фото команды). Или напишите «нет»:", parse_mode="Markdown")
 
     elif state == PHOTO:
-        if update.message.photo:
-            data["photo_file_id"] = update.message.photo[-1].file_id
+        if msg.photo:
+            data["photo_file_id"] = msg.photo[-1].file_id
             data["photo"] = "✅ Фото загружено"
         else:
             data["photo"] = text
@@ -144,43 +121,47 @@ async def process_update(update_dict):
 
         set_state(user_id, None)
 
-        # Send to admin
-        msg = (
+        admin_msg = (
             f"📋 *Новая заявка подрядчика*\n\n"
             f"👤 От: @{update.effective_user.username or 'нет'} (ID: {user_id})\n\n"
-            f"🏷 *Название:* {data.get('name', '—')}\n"
-            f"📂 *Категория:* {data.get('category', '—')}\n"
-            f"📝 *Описание:* {data.get('description', '—')}\n"
-            f"📞 *Телефон:* {data.get('phone', '—')}\n"
-            f"📧 *Email:* {data.get('email', '—')}\n"
-            f"🌐 *Сайт:* {data.get('website', '—')}\n"
-            f"📍 *Город:* {data.get('city', '—')}\n"
-            f"✈️ *Telegram:* {data.get('telegram', '—')}\n"
-            f"📸 *Instagram:* {data.get('instagram', '—')}\n"
-            f"💰 *Цена от:* {data.get('price_from', '—')} ₽\n"
-            f"💰 *Цена до:* {data.get('price_to', '—')}\n"
-            f"🖼 *Фото:* {data.get('photo', '—')}\n"
+            f"🏷 *Название:* {data.get('name','—')}\n"
+            f"📂 *Категория:* {data.get('category','—')}\n"
+            f"📝 *Описание:* {data.get('description','—')}\n"
+            f"📞 *Телефон:* {data.get('phone','—')}\n"
+            f"📧 *Email:* {data.get('email','—')}\n"
+            f"🌐 *Сайт:* {data.get('website','—')}\n"
+            f"📍 *Город:* {data.get('city','—')}\n"
+            f"✈️ *Telegram:* {data.get('telegram','—')}\n"
+            f"📸 *Instagram:* {data.get('instagram','—')}\n"
+            f"💰 *Цена от:* {data.get('price_from','—')} ₽\n"
+            f"💰 *Цена до:* {data.get('price_to','—')}\n"
+            f"🖼 *Фото:* {data.get('photo','—')}\n"
         )
 
         photo_id = data.get("photo_file_id")
         if photo_id:
-            await bot.send_photo(chat_id=ADMIN_ID, photo=photo_id, caption=msg, parse_mode="Markdown")
+            await bot.send_photo(chat_id=ADMIN_ID, photo=photo_id, caption=admin_msg, parse_mode="Markdown")
         else:
-            await bot.send_message(chat_id=ADMIN_ID, text=msg, parse_mode="Markdown")
+            await bot.send_message(chat_id=ADMIN_ID, text=admin_msg, parse_mode="Markdown")
 
-        await bot.send_message(
-            chat_id=user_id,
-            text="✅ *Спасибо! Ваша заявка отправлена.*\n\nМы рассмотрим её и свяжемся с вами в течение 1-2 рабочих дней.\n\nПо вопросам: @fatawedding",
-            parse_mode="Markdown"
-        )
+        await bot.send_message(chat_id=user_id, parse_mode="Markdown",
+            text="✅ *Спасибо! Ваша заявка отправлена.*\n\nМы рассмотрим её и свяжемся с вами в течение 1-2 рабочих дней.\n\nПо вопросам: @fatawedding")
+
     else:
         await bot.send_message(chat_id=user_id, text="Напишите /start чтобы начать заполнение анкеты.")
 
 
-def handler(request):
-    if request.method == "POST":
-        body = request.body
+class handler(BaseHTTPRequestHandler):
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(length)
         update_dict = json.loads(body)
         asyncio.run(process_update(update_dict))
-        return {"statusCode": 200, "body": "ok"}
-    return {"statusCode": 200, "body": "Fata Vendors Bot"}
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"ok")
+
+    def do_GET(self):
+        self.send_response(200)
+        self.end_headers()
+        self.wfile.write(b"Fata Vendors Bot is running")
