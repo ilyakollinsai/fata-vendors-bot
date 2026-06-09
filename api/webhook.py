@@ -2,7 +2,7 @@ import os
 import json
 import asyncio
 from http.server import BaseHTTPRequestHandler
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, Bot
+import telegram
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 ADMIN_ID = int(os.environ.get("ADMIN_ID", "237989670"))
@@ -12,7 +12,7 @@ CATEGORIES = [
     "Образ", "Оборудование", "Координаторы", "Другое"
 ]
 
-NAME, CATEGORY, DESCRIPTION, PHONE, EMAIL, WEBSITE, CITY, TELEGRAM_HANDLE, INSTAGRAM, PRICE_FROM, PRICE_TO, PHOTO = range(12)
+NAME, CATEGORY, DESCRIPTION, PHONE, EMAIL, WEBSITE, CITY, TG, IG, PRICE_FROM, PRICE_TO, PHOTO = range(12)
 
 user_states = {}
 user_data_store = {}
@@ -20,96 +20,105 @@ user_data_store = {}
 def get_state(uid): return user_states.get(uid)
 def set_state(uid, s): user_states[uid] = s
 def get_data(uid):
-    if uid not in user_data_store: user_data_store[uid] = {}
+    if uid not in user_data_store:
+        user_data_store[uid] = {}
     return user_data_store[uid]
 
-async def process_update(update_dict):
-    bot = Bot(token=BOT_TOKEN)
-    update = Update.de_json(update_dict, bot)
-    if not update.message: return
+async def handle(update_dict):
+    bot = telegram.Bot(token=BOT_TOKEN)
+    update = telegram.Update.de_json(update_dict, bot)
 
-    user_id = update.effective_user.id
+    if not update.message:
+        return
+
     msg = update.message
+    user_id = update.effective_user.id
     text = msg.text or ""
     state = get_state(user_id)
     data = get_data(user_id)
 
+    async def send(text, **kwargs):
+        await bot.send_message(chat_id=user_id, text=text, parse_mode="Markdown", **kwargs)
+
     if text == "/start":
         user_data_store[user_id] = {}
         set_state(user_id, NAME)
-        await bot.send_message(chat_id=user_id, parse_mode="Markdown",
-            text="👋 Привет! Это форма для размещения в каталоге свадебных подрядчиков *Fata*.\n\nЯ задам несколько вопросов — это займёт около 2 минут.\n\nНапишите *название вашей компании или имя*:")
+        await send("👋 Привет! Это форма для размещения в каталоге свадебных подрядчиков *Fata*.\n\nЯ задам несколько вопросов — около 2 минут.\n\nНапишите *название вашей компании или имя*:")
         return
 
     if text == "/cancel":
         user_data_store[user_id] = {}
         set_state(user_id, None)
-        await bot.send_message(chat_id=user_id, text="Заявка отменена. Напишите /start чтобы начать заново.")
+        await send("Заявка отменена. Напишите /start чтобы начать заново.")
+        return
+
+    if state is None:
+        await send("Напишите /start чтобы начать заполнение анкеты.")
         return
 
     if state == NAME:
         data["name"] = text
         set_state(user_id, CATEGORY)
-        keyboard = [[cat] for cat in CATEGORIES]
-        await bot.send_message(chat_id=user_id, text="Выберите *категорию*:", parse_mode="Markdown",
-            reply_markup=ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True))
+        kb = [[c] for c in CATEGORIES]
+        await send("Выберите *категорию*:",
+            reply_markup=telegram.ReplyKeyboardMarkup(kb, one_time_keyboard=True, resize_keyboard=True))
 
     elif state == CATEGORY:
         data["category"] = text
         set_state(user_id, DESCRIPTION)
-        await bot.send_message(chat_id=user_id, text="Напишите *описание* ваших услуг (до 300 символов):",
-            parse_mode="Markdown", reply_markup=ReplyKeyboardRemove())
+        await send("Напишите *описание* ваших услуг (до 300 символов):",
+            reply_markup=telegram.ReplyKeyboardRemove())
 
     elif state == DESCRIPTION:
         if len(text) > 300:
-            await bot.send_message(chat_id=user_id, text="⚠️ Слишком длинно! Сократите до 300 символов.")
+            await send("⚠️ Слишком длинно! Сократите до 300 символов.")
             return
         data["description"] = text
         set_state(user_id, PHONE)
-        await bot.send_message(chat_id=user_id, text="Укажите *телефон* для связи:", parse_mode="Markdown")
+        await send("Укажите *телефон* для связи:")
 
     elif state == PHONE:
         data["phone"] = text
         set_state(user_id, EMAIL)
-        await bot.send_message(chat_id=user_id, text="Укажите *email* (или напишите «нет»):", parse_mode="Markdown")
+        await send("Укажите *email* (или напишите «нет»):")
 
     elif state == EMAIL:
         data["email"] = text
         set_state(user_id, WEBSITE)
-        await bot.send_message(chat_id=user_id, text="Укажите *сайт* (или напишите «нет»):", parse_mode="Markdown")
+        await send("Укажите *сайт* (или напишите «нет»):")
 
     elif state == WEBSITE:
         data["website"] = text
         set_state(user_id, CITY)
-        await bot.send_message(chat_id=user_id, text="В каком *городе* работаете?", parse_mode="Markdown")
+        await send("В каком *городе* работаете?")
 
     elif state == CITY:
         data["city"] = text
-        set_state(user_id, TELEGRAM_HANDLE)
-        await bot.send_message(chat_id=user_id, text="Ваш *Telegram* username (например @username, или «нет»):", parse_mode="Markdown")
+        set_state(user_id, TG)
+        await send("Ваш *Telegram* username (например @username, или «нет»):")
 
-    elif state == TELEGRAM_HANDLE:
+    elif state == TG:
         data["telegram"] = text
-        set_state(user_id, INSTAGRAM)
-        await bot.send_message(chat_id=user_id, text="Ваш *Instagram* (или «нет»):", parse_mode="Markdown")
+        set_state(user_id, IG)
+        await send("Ваш *Instagram* (или «нет»):")
 
-    elif state == INSTAGRAM:
+    elif state == IG:
         data["instagram"] = text
         set_state(user_id, PRICE_FROM)
-        await bot.send_message(chat_id=user_id, text="Укажите *минимальную цену* в рублях (только цифры, например: 15000):", parse_mode="Markdown")
+        await send("Укажите *минимальную цену* в рублях (только цифры, например: 15000):")
 
     elif state == PRICE_FROM:
         if not text.strip().isdigit():
-            await bot.send_message(chat_id=user_id, text="⚠️ Введите только цифры, например: 15000")
+            await send("⚠️ Введите только цифры, например: 15000")
             return
         data["price_from"] = text
         set_state(user_id, PRICE_TO)
-        await bot.send_message(chat_id=user_id, text="Укажите *максимальную цену* в рублях (или «нет»):", parse_mode="Markdown")
+        await send("Укажите *максимальную цену* в рублях (или «нет»):")
 
     elif state == PRICE_TO:
         data["price_to"] = text
         set_state(user_id, PHOTO)
-        await bot.send_message(chat_id=user_id, text="Загрузите *фото* (логотип или фото команды). Или напишите «нет»:", parse_mode="Markdown")
+        await send("Загрузите *фото* (логотип или фото команды). Или напишите «нет»:")
 
     elif state == PHOTO:
         if msg.photo:
@@ -144,19 +153,21 @@ async def process_update(update_dict):
         else:
             await bot.send_message(chat_id=ADMIN_ID, text=admin_msg, parse_mode="Markdown")
 
-        await bot.send_message(chat_id=user_id, parse_mode="Markdown",
-            text="✅ *Спасибо! Ваша заявка отправлена.*\n\nМы рассмотрим её и свяжемся с вами в течение 1-2 рабочих дней.\n\nПо вопросам: @fatawedding")
-
-    else:
-        await bot.send_message(chat_id=user_id, text="Напишите /start чтобы начать заполнение анкеты.")
+        await send("✅ *Спасибо! Ваша заявка отправлена.*\n\nМы рассмотрим её и свяжемся с вами в течение 1-2 рабочих дней.\n\nПо вопросам: @fatawedding")
 
 
 class handler(BaseHTTPRequestHandler):
     def do_POST(self):
-        length = int(self.headers.get("Content-Length", 0))
-        body = self.rfile.read(length)
-        update_dict = json.loads(body)
-        asyncio.run(process_update(update_dict))
+        try:
+            length = int(self.headers.get("Content-Length", 0))
+            body = self.rfile.read(length)
+            update_dict = json.loads(body)
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(handle(update_dict))
+            loop.close()
+        except Exception as e:
+            print(f"Error: {e}")
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"ok")
